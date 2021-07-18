@@ -1,3 +1,7 @@
+July 2021
+
+Kinda butchered the original code if I'm honest. Replaced TinyGPS Library with NeoGPS and fixed a few things that prevented data from being written to the SD card. Please use at your own risk!
+
 Feb 2020
 
 If v6 is not starting please download the 'private' folder from the repository as this was not included in the .zip files. Please paste it into the folder that contains the 'whalength.m' file.
