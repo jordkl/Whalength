@@ -1,92 +1,27 @@
 
+// IMU Object
+struct imu_data {
+    float Grav_x;
+    float Grav_y;
+    float Grav_z;
+    float Gyro_x;
+    float Gyro_y;
+    float Gyro_z;
+    float tilt_deg;
+};
 
-// USB Serial port versions:
-#ifdef USB_CONNECTED
-void print_gps_date() {
-  if (gps.date.isValid()) {
-    Serial.print(gps.date.year());
-    Serial.print(F("/"));
-    if (gps.date.month() < 10)
-      Serial.print(F("0"));
-    Serial.print(gps.date.month());
-    Serial.print(F("/"));
-    if (gps.date.day() < 10)
-      Serial.print(F("0"));
-    Serial.print(gps.date.day());
-  }
-  else {
-    Serial.print(F("INVALID"));
-  }
-}
-
-void print_gps_time() {
-  if (gps.time.isValid()) {
-    if (gps.time.hour() < 10)
-      Serial.print(F("0"));
-    Serial.print(gps.time.hour());
-    Serial.print(F(":"));
-    if (gps.time.minute() < 10)
-      Serial.print(F("0"));
-    Serial.print(gps.time.minute());
-    Serial.print(F(":"));
-    if (gps.time.second() < 10)
-      Serial.print(F("0"));
-    Serial.print(gps.time.second());
-  }
-  else {
-    Serial.print(F("INVALID"));
-  }
-}
-
-void print_lidar_alt() {
-  int distance_cm;
-  int byteH, byteL;  // low and high bytes (reading is 16bit int)
-
-  ////// get laser value (centimeters) //////
-  // get 2 bytes from the SF-11 range finder
-  Wire.requestFrom(I2C_ADR, 2);
-  if (Wire.available() >= 2) {
-    byteH = Wire.read();
-    byteL = Wire.read();
-    // combine in big endian order
-    distance_cm = byteH * 256 + byteL;
-    //Serial.print("\tlidar (cm): ");
-    Serial.print(distance_cm);
-  }
-  else
-    Serial.print(F("NaN"));
-}
-
-void print_imu_data(struct imu_data imu_results) {
-  Serial.print(imu_results.Grav_x, 4);
-  Serial.print(F("\t"));
-  Serial.print(imu_results.Grav_y, 4);
-  Serial.print(F("\t"));
-  Serial.print(imu_results.Grav_z, 4);
-
-  Serial.print(F("\t"));
-
-  Serial.print(imu_results.Gyro_x, 3);
-  Serial.print(F("\t"));
-  Serial.print(imu_results.Gyro_y, 3);
-  Serial.print(F("\t"));
-  Serial.print(imu_results.Gyro_z, 3);
-}
-#endif
-
-
-// SD card versions:
+// Functions
 void write_gps_date() {
-  if (gps.date.isValid()) {
-    logfile.print(gps.date.year());
+  if (fix.valid.date) {
+    logfile.print(fix.dateTime.year);
     logfile.print(F("/"));
-    if (gps.date.month() < 10)
+    if (fix.dateTime.month < 10)
       logfile.print(F("0"));
-    logfile.print(gps.date.month());
+    logfile.print(fix.dateTime.month);
     logfile.print(F("/"));
-    if (gps.date.day() < 10)
+    if (fix.dateTime.date < 10)
       logfile.print(F("0"));
-    logfile.print(gps.date.day());
+    logfile.print(fix.dateTime.date);
   }
   else {
     logfile.print(F("INVALID"));
@@ -94,33 +29,24 @@ void write_gps_date() {
 }
 
 void write_gps_time() {
-  if (gps.time.isValid()) {
-    if (gps.time.hour() < 10)
+  if (fix.valid.time) {
+    if (fix.dateTime.hours < 10)
       logfile.print(F("0"));
-    logfile.print(gps.time.hour());
+    logfile.print(fix.dateTime.hours);
     logfile.print(F(":"));
-    if (gps.time.minute() < 10)
+    if (fix.dateTime.minutes < 10)
       logfile.print(F("0"));
-    logfile.print(gps.time.minute());
+    logfile.print(fix.dateTime.minutes);
     logfile.print(F(":"));
-    if (gps.time.second() < 10)
+    if (fix.dateTime.seconds < 10)
       logfile.print(F("0"));
-    logfile.print(gps.time.second());
+    logfile.print(fix.dateTime.seconds);
   }
   else {
     logfile.print(F("INVALID"));
   }
 }
 
-
-/* TODO, run after we have GPS lock
-  // SD card file timestamp callback function
-  void FileDateTime(uint16_t *date, uint16_t *time) {
-  DateTime now = rtc.now();
-   date = FAT_DATE(now.year(), now.month(), now.day());
-   time = FAT_TIME(now.hour(), now.minute(), now.second());
-  }
-*/
 
 void write_lidar_alt() {
   int distance_cm;
@@ -158,19 +84,13 @@ void write_imu_data(struct imu_data imu_results) {
   logfile.print(imu_results.Gyro_z, 3);
 }
 
-
-
-/// **** if build fails with unknown Serial1, make sure board is set to SparkFun Pro Micro **** ///
-
-// From the TinyGPS++ library smartDelay() example:
-// This custom version of delay() ensures that the gps object is being "fed".
 static void wakeful_sleep(unsigned long ms)
 {
   unsigned long start = millis();
   do
   {
     while (Serial1.available())
-      gps.encode(Serial1.read());
+      fix = gps.read();
   } while (millis() - start < ms);
 }
 
@@ -227,11 +147,6 @@ struct imu_data get_IMU_readings() {
   reading_yGy = (float)sample_sum_yGy / NUMSAMPLES;
   reading_zGy = (float)sample_sum_zGy / NUMSAMPLES;
 
-  //Serial.println(millis() - millisec1);
-
-  // 0.061 milli-g per LSB. /1000 to get in terms of 1g of gravity
-  //  see start of this file, datasheet page 15
-  // for m/sec^2 value they used for g would need to be known   ..?
   results.Grav_x = reading_xAc * 0.061 / 1000.0;
   results.Grav_y = reading_yAc * 0.061 / 1000.0;
   results.Grav_z = reading_zAc * 0.061 / 1000.0;
@@ -248,4 +163,3 @@ struct imu_data get_IMU_readings() {
 
   return results;
 }
-

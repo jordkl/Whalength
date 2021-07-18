@@ -1,192 +1,80 @@
 // Program to talk to GlobalSat EM-506 GPS and lightware SF-11 laser rangefinder
 // and log to SparkFun SDcard board.
 // HB 14 June 2016     (added IMU code 19 May 2017)
+// Update by Jordan Lerma @jordkl
+// 12 May 2021
 
-
+//Uncomment all of the definitions of the NMEA_PARSE_XXX in NMEAGPS.cfg.h in NMEA GPS Library
 
 #include <SPI.h>
 #include <Wire.h>    // Wire.h provides I2C bus
-#include <TinyGPS++.h>
+#include <NMEAGPS.h>
 #include <LSM6.h>
 #include "SD.h"
 
 
-#define USB_CONNECTED
-
-
-// LiDAR I2C pins
-//#define I2C_SDA  2
-//#define I2C_CLK  3
+// Define pins and sensors
 #define I2C_ADR  0x55
-
-// SDcard SPI pins
 #define SPI_CS   10
-//#define SPI_CLK  15
-//#define SPI_MISO 14
-//#define SPI_MOSI 16
 #define RX_LED   17
-
-
-// The TinyGPS++ object
-TinyGPSPlus gps;
-
-
-#define NUMSAMPLES 100    // for 400 it takes approx 0.852sec/cycle; 100 samples take 0.212 sec.
-
-// IMU sensor
 LSM6 imu;
 
+// The Objects
+NMEAGPS gps;
+gps_fix fix;
+File logfile;
+#define NUMSAMPLES 100 
 
-// write out to sd card at least every 60 seconds
+//Write out to the SD Card every 60 seconds
 unsigned long prev_millisec = 0;
 long interval = 60000;
 
+void setup(void) {
+  //Start the Machines
+  Serial.begin(9600);
+  delay(1000);
+  Serial1.begin(9600);
+  delay(500);
+  Wire.begin();
+  delay(500);
+  SD.begin(SPI_CS);
+  delay(500);
 
-// the logging file
-File logfile;
+  if (!imu.init()) {
+    Serial.println("IMU Error");
+  }
+  imu.enableDefault();
+  delay(500);
+  fix = gps.read();
 
-
-
-////////////////////////////////////////////////////////////
-
-int freeRam () {
-    extern int __heap_start, *__brkval;
-    int v;
-    return (int) &v - (__brkval == 0 ? (int) &__heap_start : (int) __brkval);
+  // Create a new file
+  char filename[] = "LOG_0000.CSV";
+  for (uint16_t i = 0; i < 10000; i++) {
+      filename[4] = i / 1000 + '0';
+      filename[5] = (i % 1000) / 100 + '0';
+      filename[6] = (i % 100) / 10 + '0';
+      filename[7] = i % 10 + '0';
+      if (! SD.exists(filename)) {
+          logfile = SD.open(filename, FILE_WRITE);
+          break;  // leave the loop!
+      }
+  }
+  delay(1000);
+  // Initialize the File 
+  logfile.println(F("# GPS and Laser Rangefinder logging with Pro Micro Arduino 3.3v"));
+  logfile.println(F("# units:  accel=1g  gyro=deg/sec"));
+  logfile.print(F("#gmt_date\tgmt_time\tnum_sats\tlongitude\tlatitude\t"));
+  logfile.print(F("gps_altitude_m\tSOG_kt\tCOG\tHDOP\tlaser_altitude_cm\t"));
+  logfile.println(F("tilt_deg\taccel_x\taccel_y\taccel_z\tgyro_x\tgyro_y\tgyro_z"));
+  logfile.flush();
+  
+  // Tell the boys we ready to fly
+  Serial.println("Setup Complete");
 }
 
-////////////////////////////////////////////////////////////
+// Add some functions
 
-
-void setup(void)
-{
-
-#ifdef USB_CONNECTED
-    //// Start the USB-serial, for debugging
-    Serial.begin(9600);
-    /** Careful with this next line, if computer isn't attatched it will hang **/
-    while(!Serial) {   // loop while ProMicro takes a moment to get itself together
-        if (millis() > 6000)   // give up waiting for USB cable plugin after 6 sec
-            break;
-    }
-
-    Serial.print(F("Free RAM: "));
-    Serial.println(freeRam());
-#endif
-
-    //// GPS is on the ProMicro's UART (Serial1)
-    Serial1.begin(4800);
-    while(!Serial1);   // wait for it   (** NOTE this will hang the logger if GPS is not connected **)
-    // Turn off messages we don't want
-    Serial1.print(F("$PSRF103,02,00,00,01*26\r\n"));      // GSA off
-    delay(20);
-    Serial1.print(F("$PSRF103,03,00,00,01*27\r\n"));      // GSV off
-    delay(20);
-
-    //// startup I2C bus for the LiDAR
-    Wire.begin();
-
-
-    //// init LSM6 portion of IMU board
-    if (!imu.init()) {
-#ifdef USB_CONNECTED
-        Serial.println("Failed to detect and initialize IMU!");
-#endif
-        lock_and_blink();  // lock it up
-    }
-    imu.enableDefault();
-
-
-    /////////////////////////////////////////
-#ifdef USB_CONNECTED
-    Serial.print(F("Initializing SD card..."));
-#endif
-    // see if the card is present and can be initialized:
-    if (!SD.begin(SPI_CS)) {
-#ifdef USB_CONNECTED
-        Serial.println(F("ERROR: SD card failed, or not present. Halting."));
-#endif
-        lock_and_blink();  // lock it up
-        //or,  return;
-    }
-#ifdef USB_CONNECTED
-    Serial.println(F("SD card initialized."));
-#endif
-
-
-/* TODO: set once we have GPS lock
-    // set SD file date time callback function
-    SdFile::dateTimeCallback(FileDateTime);
-*/
-
-    // create a new file
-    char filename[] = "LOG_0000.CSV";
-    //char filename[] = "LOGB0000.CSV";
-    for (uint16_t i = 0; i < 10000; i++) {
-        filename[4] = i / 1000 + '0';
-        filename[5] = (i % 1000) / 100 + '0';
-        filename[6] = (i % 100) / 10 + '0';
-        filename[7] = i % 10 + '0';
-        //Serial.print("Trying ");
-        //Serial.println(filename);
-        if (! SD.exists(filename)) {
-            // only open a new file if it doesn't exist
-            logfile = SD.open(filename, FILE_WRITE); 
-            break;  // leave the loop!
-        }
-        //else {   // tidy up
-        //   SD.remove(filename);
-        //}
-    }
-
-    delay(500); // give it a chance to catch up before testing if it's ok.
-    if (! logfile) {
-#ifdef USB_CONNECTED
-        Serial.println(F("ERROR: couldn't create log file. Halting"));
-#endif
-        lock_and_blink();  // lock it up
-    }
-
-#ifdef USB_CONNECTED
-    Serial.print(F("Logging to: "));
-    Serial.println(filename);
-    Serial.println();
-
-    ////////////////////////////////////
-
-    Serial.println(F("# GPS and Laser Rangefinder logging with Pro Micro Arduino 3.3v"));
-    Serial.println(F("# units:  accel=1g  gyro=deg/sec"));
-
-    Serial.print(F("#gmt_date\tgmt_time\tnum_sats\tlongitude\tlatitude\t"));
-    Serial.print(F("gps_altitude_m\tSOG_kt\tCOG\tHDOP\tlaser_altitude_cm\t"));
-    Serial.println(F("tilt_deg\taccel_x\taccel_y\taccel_z\tgyro_x\tgyro_y\tgyro_z"));
-#endif
-    logfile.println(F("# GPS and Laser Rangefinder logging with Pro Micro Arduino 3.3v"));
-    //logfile.println(F("#  Datalogger unit 'B'"));
-    logfile.println(F("# units:  accel=1g  gyro=deg/sec"));
-
-    logfile.print(F("#gmt_date\tgmt_time\tnum_sats\tlongitude\tlatitude\t"));
-    logfile.print(F("gps_altitude_m\tSOG_kt\tCOG\tHDOP\tlaser_altitude_cm\t"));
-    logfile.println(F("tilt_deg\taccel_x\taccel_y\taccel_z\tgyro_x\tgyro_y\tgyro_z"));
-    logfile.flush();
-
-    // should we wait a while for GPS to get a fix?
-    wakeful_sleep(2000);
-
-    // blink 10 times, we're good to go
-    for (int i = 0; i < 10; i++) {
-        digitalWrite(RX_LED, LOW);
-        TXLED1;
-        wakeful_sleep(100);
-        digitalWrite(RX_LED, HIGH);
-        TXLED0;
-        wakeful_sleep(100);
-    }
-}
-
-
-///////////////////////////////////////////////////
-
+// IMU Object
 struct imu_data {
     float Grav_x;
     float Grav_y;
@@ -198,177 +86,218 @@ struct imu_data {
 };
 
 
+// Functions
+void write_gps_date() {
+  if (fix.valid.date) {
+    logfile.print(fix.dateTime.year);
+    logfile.print(F("/"));
+    if (fix.dateTime.month < 10)
+      logfile.print(F("0"));
+    logfile.print(fix.dateTime.month);
+    logfile.print(F("/"));
+    if (fix.dateTime.date < 10)
+      logfile.print(F("0"));
+    logfile.print(fix.dateTime.date);
+  }
+  else {
+    logfile.print(F("INVALID"));
+  }
+}
+
+void write_gps_time() {
+  if (fix.valid.time) {
+    if (fix.dateTime.hours < 10)
+      logfile.print(F("0"));
+    logfile.print(fix.dateTime.hours);
+    logfile.print(F(":"));
+    if (fix.dateTime.minutes < 10)
+      logfile.print(F("0"));
+    logfile.print(fix.dateTime.minutes);
+    logfile.print(F(":"));
+    if (fix.dateTime.seconds < 10)
+      logfile.print(F("0"));
+    logfile.print(fix.dateTime.seconds);
+  }
+  else {
+    logfile.print(F("INVALID"));
+  }
+}
+
+void write_lidar_alt() {
+  int distance_cm;
+  int byteH, byteL; 
+
+  ////// get laser value (centimeters) //////
+  // get 2 bytes from the SF-11 range finder
+  Wire.requestFrom(I2C_ADR, 2);
+  if (Wire.available() >= 2) {
+    byteH = Wire.read();
+    byteL = Wire.read();
+    // combine in big endian order
+    distance_cm = byteH * 256 + byteL;
+    //Serial.print("\tlidar (cm): ");
+    logfile.print(distance_cm);
+  }
+  else
+    logfile.print(F("NaN"));
+}
+
+void write_imu_data(struct imu_data imu_results) {
+  logfile.print(imu_results.Grav_x, 4);
+  logfile.print(F("\t"));
+  logfile.print(imu_results.Grav_y, 4);
+  logfile.print(F("\t"));
+  logfile.print(imu_results.Grav_z, 4);
+
+  logfile.print(F("\t"));
+
+  logfile.print(imu_results.Gyro_x, 3);
+  logfile.print(F("\t"));
+  logfile.print(imu_results.Gyro_y, 3);
+  logfile.print(F("\t"));
+  logfile.print(imu_results.Gyro_z, 3);
+}
+
+void lock_and_blink() {
+  while (1) {   //lock it up, blinking forever
+    digitalWrite(RX_LED, HIGH);
+    TXLED0;
+    delay(500);
+    digitalWrite(RX_LED, LOW);
+    TXLED1;
+    delay(500);
+  }
+}
+
+struct imu_data get_IMU_readings() {
+  struct imu_data results;
+
+  int i;
+  long sample_sum_xAc, sample_sum_yAc, sample_sum_zAc;
+  long sample_sum_xGy, sample_sum_yGy, sample_sum_zGy;
+  float reading_xAc, reading_yAc, reading_zAc;
+  float reading_xGy, reading_yGy, reading_zGy;
+  float Grav_x, Grav_y, Grav_z, Gyro_x, Gyro_y, Gyro_z;
+  float horiz_mag;
+  //unsigned long millisec1;
+
+  sample_sum_xAc = 0;
+  sample_sum_yAc = 0;
+  sample_sum_zAc = 0;
+  sample_sum_xGy = 0;
+  sample_sum_yGy = 0;
+  sample_sum_zGy = 0;
+
+  digitalWrite(RX_LED, LOW);   // set the Rx LED on
+  for (i = 0; i < NUMSAMPLES; i++) {
+    imu.read();
+    sample_sum_xAc += imu.a.x;
+    sample_sum_yAc += imu.a.y;
+    sample_sum_zAc += imu.a.z;
+    sample_sum_xGy += imu.g.x;
+    sample_sum_yGy += imu.g.y;
+    sample_sum_zGy += imu.g.z;
+  }
+  digitalWrite(RX_LED, HIGH);   // set the Rx LED off
+
+  reading_xAc = (float)sample_sum_xAc / NUMSAMPLES;
+  reading_yAc = (float)sample_sum_yAc / NUMSAMPLES;
+  reading_zAc = (float)sample_sum_zAc / NUMSAMPLES;
+  reading_xGy = (float)sample_sum_xGy / NUMSAMPLES;
+  reading_yGy = (float)sample_sum_yGy / NUMSAMPLES;
+  reading_zGy = (float)sample_sum_zGy / NUMSAMPLES;
+
+  results.Grav_x = reading_xAc * 0.061 / 1000.0;
+  results.Grav_y = reading_yAc * 0.061 / 1000.0;
+  results.Grav_z = reading_zAc * 0.061 / 1000.0;
+
+  horiz_mag = sqrt(results.Grav_x*results.Grav_x + results.Grav_y*results.Grav_y);
+  results.tilt_deg = abs(atan(horiz_mag / results.Grav_z) * 180./M_PI);
+  results.Gyro_x = reading_xGy * 8.75 / 1000.0;
+  results.Gyro_y = reading_yGy * 8.75 / 1000.0;
+  results.Gyro_z = reading_zGy * 8.75 / 1000.0;
+
+  return results;
+}
+
+
 void loop(void)
 {
-
-#ifdef DEBUG_NMEA
-    // Echo GPS to USB-serial port for debugging:
-    char c = 'x';    //gps
-    while(Serial1.available() > 0) {
-        c = Serial1.read();
-        if(c == '\r')
-            continue;
-        else if(c == '\n')
-            Serial.println();
-        else
-            Serial.print(c);
-    }
-#endif
-
-    ////// get GPS string //////
-    while(Serial1.available() > 0)
-        gps.encode(Serial1.read());
-
-    // perhaps output all NaNs every 10 sec if no fix, just to show something is happening?
-    if(!gps.date.isUpdated() || gps.location.age() > 1750)
-        return;
-        //{delay(2000); Serial.println("NO FIX!");}
-//    /* Debug */
-//    if(!gps.date.isUpdated())
-//        return;
-
-
-    ////// IMU ///////////////////////
-    struct imu_data imu_results;
-    imu_results = get_IMU_readings();
-
-    //// update gps data avail scan again to clear the decks
-    while(Serial1.available() > 0)
-        gps.encode(Serial1.read());
-
-
-    //// Printout to USB-serial
-#ifdef USB_CONNECTED
-    print_gps_date();
-    Serial.print(F("\t"));
-    print_gps_time(); 
-    Serial.print(F("\t"));
-
-    Serial.print(gps.satellites.value());
-    Serial.print(F("\t"));
-    if (gps.location.isValid()) {
-	Serial.print(gps.location.lng(), 6);
-	Serial.print(F("\t"));
-	Serial.print(gps.location.lat(), 6);
-    }
-    else {
-	Serial.print(F("NaN\tNaN"));
-    }
-    Serial.print(F("\t"));
-
-    if (gps.altitude.isValid())
-	Serial.print(gps.altitude.meters());
-    else
-	Serial.print(F("NaN"));
-    Serial.print(F("\t"));
-
-    if (gps.speed.isValid())
-	Serial.print(gps.speed.knots());
-    else
-	Serial.print(F("NaN"));
-    Serial.print(F("\t"));
-
-    if (gps.course.isValid())
-	Serial.print(gps.course.deg());
-    else
-	Serial.print(F("NaN"));
-    Serial.print(F("\t"));
-    if (gps.hdop.isValid())
-	Serial.print(gps.hdop.value());
-    else
-	Serial.print(F("NaN"));
-    Serial.print(F("\t"));
-
-    // lidar
-    print_lidar_alt();	      
-    Serial.print(F("\t"));
-
-    // IMU
-    Serial.print(imu_results.tilt_deg, 2);
-    Serial.print(F("\t"));
-    print_imu_data(imu_results);  // grav x,y,z then gyro x,y,z
-    Serial.println();
-
-    // clear the pipes
-    wakeful_sleep(0);
-#endif
-
-    ///// write to SD card /////
-    TXLED1;   // The Tx LED is not tied to a normally controlled pin so we use this macro
-
-    write_gps_date();
-    logfile.print(F("\t"));
-    write_gps_time(); 
-    logfile.print(F("\t"));
-
-    logfile.print(gps.satellites.value());
-    logfile.print(F("\t"));
-    if (gps.location.isValid()) {
-        logfile.print(gps.location.lng(), 6);
+  while (gps.available( Serial1)) {
+        fix = gps.read();
+        
+        // Get IMU data
+        struct imu_data imu_results;
+        imu_results = get_IMU_readings();
+       
+      write_gps_date();
+      logfile.print(F("\t"));
+      write_gps_time(); 
+      logfile.print(F("\t"));
+      logfile.print(fix.satellites);
+      logfile.print(F("\t"));
+          
+    if (fix.valid.location) {
+        logfile.print(fix.longitude());
         logfile.print(F("\t"));
-        logfile.print(gps.location.lat(), 6);
+        logfile.print(fix.latitude());
     }
     else {
         logfile.print(F("NaN\tNaN"));
     }
     logfile.print(F("\t"));
 
-    if (gps.altitude.isValid())
-        logfile.print(gps.altitude.meters());
-    else
+    if (fix.valid.altitude) {
+        logfile.print(fix.alt.whole);
+    }
+    else {
         logfile.print(F("NaN"));
+    }
     logfile.print(F("\t"));
-
-    if (gps.speed.isValid())
-        logfile.print(gps.speed.knots());
-    else
+    if (fix.valid.speed) {
+        logfile.print(fix.speed_kph());
+    }
+    else {
         logfile.print(F("NaN"));
+    }
     logfile.print(F("\t"));
-
-    if (gps.course.isValid())
-        logfile.print(gps.course.deg());
-    else
+    if (fix.valid.heading) {
+        logfile.print(fix.heading_cd());
+    }
+    else {
         logfile.print(F("NaN"));
+    }
     logfile.print(F("\t"));
-    if (gps.hdop.isValid())
-        logfile.print(gps.hdop.value());
-    else
-        logfile.print(F("NaN"));
+    if (fix.valid.hdop) {
+        logfile.print(fix.hdop);
+    }
+    else {
+      logfile.print(F("NaN"));
+    }
     logfile.print(F("\t"));
 
     // lidar
     write_lidar_alt();        
     logfile.print(F("\t"));
-
+    
+    
     // IMU
     logfile.print(imu_results.tilt_deg, 2);
     logfile.print(F("\t"));
     write_imu_data(imu_results);  // grav x,y,z then gyro x,y,z
     logfile.println();
 
-    TXLED0;    // Tx LED off
-
-
-    // The following line will 'save' the file to the SD card after every
-    // 60 seconds of data - this will use more power but it's safer!
-    // If you want to speed up the system, remove the call to flush() and it
-    // will save the file only every 512 bytes - every time a sector on the 
-    // SD card is filled with data. (about every 6 seconds)
-    // The flush() may still be needed to update the FAT?
+     TXLED0;    // Tx LED off
+    
     unsigned long current_millisec;
     current_millisec = millis();
     if(current_millisec - prev_millisec > interval) {
         prev_millisec = current_millisec;
-#ifdef USB_CONNECTED
-        Serial.println("flushing to SDcard.");
-#endif
+        
         digitalWrite(RX_LED, LOW);   // set the Rx LED on
         logfile.flush();
         digitalWrite(RX_LED, HIGH);   // set the Rx LED off
-        //wakeful_sleep(20);
+        Serial.println("writing to card");
     }
-
-    // checking to see if the 1Hz $GPRMC date is updated seems to be enough for a delay.
+  }
 }
-
-
