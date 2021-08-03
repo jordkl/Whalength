@@ -1,6 +1,13 @@
-July 2021
+July 2021 - Updates to Arduino Code (.ino)
 
 Kinda butchered the original code if I'm honest. Replaced TinyGPS Library with NeoGPS and fixed a few things that prevented data from being written to the SD card. Please use at your own risk!
+
+Things you need to do to get it working:
+1. download the .zip in /drone_GPS_and_LiDAR_logger_with_accel/ 
+2. Open the .INO file in Arduino
+3. Make sure the correct board is selected (SparkFun Pro Micro)
+4. Uncomment definitions in GPSfix_cfg.h
+5. Uncomment definitions of NMEA_PARSE_XXX in NMEAGPS.cfg.h
 
 Feb 2020
 
